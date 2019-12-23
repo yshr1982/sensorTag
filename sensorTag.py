@@ -30,18 +30,17 @@ class ambient_control(threading.Thread):
 
         while True:
             time.sleep(20.0)
-            print(g_sensor_data)
-            if not g_sensor_data :
+            if len(g_sensor_data) != 0 :
                 global_lock.acquire()
                 for d in g_sensor_data:
+                    print(d)
                     # sensor tagが見つかり、writekeyとchannel idがセットされているならばambientに送信する.
-                    if not d.keys("ambient"):
-                        if d["write_key"] == 0 and d["channelId"] == 0 : 
-                            print(d)
-                        else:
-                            d["ambient"] = ambient.Ambient(ch, writekey)
-                    else:
+                    if "ambient" in d:
+                        print("send ambient {0}".format(d["data"]))
                         d["ambient"].send(d["data"])
+                    else:
+                        if not (d["write_key"] == 0 and d["channelId"] == 0) : 
+                            d["ambient"] = ambient.Ambient(d["channelId"], d["write_key"])
                 global_lock.release()
 
 
@@ -164,11 +163,12 @@ class sensor_control(threading.Thread):
 
     def run(self):
         time.sleep(10.0)
-        self.scan()
         while True:
-            self.get_data()             # 周期的にセンサーの測定値を取得する
-            self.get_write_key()        # 周期的にwebuiからの設定イベントを確認する
-            
+            if len(self.data) == 0:
+                self.scan()
+            else:
+                self.get_data()             # 周期的にセンサーの測定値を取得する
+                self.get_write_key()        # 周期的にwebuiからの設定イベントを確認する
             time.sleep(10.0)
 
 def main():
