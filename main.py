@@ -29,7 +29,7 @@ class ambient_control(threading.Thread):
         global global_lock
 
         while True:
-            time.sleep(20.0)
+            time.sleep(120.0)
             if len(g_sensor_data) != 0 :
                 global_lock.acquire()
                 for d in g_sensor_data:
@@ -166,10 +166,11 @@ class sensor_control(threading.Thread):
         while True:
             if len(self.data) == 0:
                 self.scan()
+                time.sleep(self.time_out)
             else:
                 self.get_data()             # 周期的にセンサーの測定値を取得する
                 self.get_write_key()        # 周期的にwebuiからの設定イベントを確認する
-            time.sleep(10.0)
+                time.sleep(self.interval)
 
 def main():
     parser = argparse.ArgumentParser()
