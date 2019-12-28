@@ -16,7 +16,7 @@ html_body = """
 <body>
 <div>
   <h1 style="text-align: center;">SensorTagリスト</h1>
-  <meta http-equiv="refresh" content="0; URL='sensorTag_access.py'" />
+  <meta http-equiv="refresh" content="0; URL='sensortaglist.py'" />
 </html>"""
 
 r = redis.StrictRedis(host='localhost', port=6379)
