@@ -30,8 +30,8 @@ class ambient_control(threading.Thread):
 
         while True:
             time.sleep(120.0)
+            global_lock.acquire()
             if len(g_sensor_data) != 0 :
-                global_lock.acquire()
                 for d in g_sensor_data:
                     print(d)
                     # sensor tagが見つかり、writekeyとchannel idがセットされているならばambientに送信する.
@@ -41,7 +41,7 @@ class ambient_control(threading.Thread):
                     else:
                         if not (d["write_key"] == 0 and d["channelId"] == 0) : 
                             d["ambient"] = ambient.Ambient(d["channelId"], d["write_key"])
-                global_lock.release()
+            global_lock.release()
 
 
 
@@ -84,8 +84,42 @@ class sensor_control(threading.Thread):
                     g_sensor_data.append(self.data[-1])
                     self.redis.hset(dev.addr, 'rssi', dev.rssi)
                     global_lock.release()
-        sys.stdout.flush()
-    
+        sys.stdout.flush()   
+    def rescan(self):
+        global g_sensor_data
+        global global_lock
+
+        print('re scanning tag...')
+        tmp_data = []
+        devices = self.scanner.scan(self.time_out)                  # BLEをスキャンする
+        for d in devices:
+            for (sdid, desc, val) in d.getScanData():
+                if sdid == 9 and val == 'CC2650 SensorTag':         # ローカルネームが'CC2650 SensorTag'のものを探す
+                    dev = d
+
+                    print('found SensorTag, addr = %s' % dev.addr)
+                    tag = bluepy.sensortag.SensorTag(dev.addr)      # 見つけたデバイスに接続する
+                    tmp_data.append({ "device" : d, "tag" : tag, "addr":dev.addr ,"rssi":dev.rssi})
+        for tmp in tmp_data:
+            is_hit = False
+            for i in range(len(self.data)):
+                if self.data[i]["addr"] == tmp["addr"]:
+                    self.data[i]["tag"] = tmp["tag"]
+                    self.data[i]["device"] = tmp["device"]
+                    is_hit = True
+                    break
+            if is_hit == False:
+                self.data.append({
+                        "device" : tmp["device"],
+                        "tag" : tmp["tag"],
+                        "data": {'d1':0,'d2':0,'d3':0,'d4':0,'d5':0},
+                        "addr":tmp["addr"],
+                        "rssi":tmp["rssi"],
+                        "channelId":0,
+                        "write_key":0
+                        })
+
+
     def is_registered(self,addr):
         sensor_found = False
         # 見つけたセンサーがすでに見つかっている物かチェック
@@ -128,7 +162,7 @@ class sensor_control(threading.Thread):
                 tag.barometer.disable()
                 tag.battery.disable()
                 tag.lightmeter.disable()
-            except bluepy.btle.BTLEDisconnectError as e:
+            except:
                 # センサーの読み取りエラー発生
                 get_data['d1'] = 0
                 get_data['d2'] = 0
@@ -136,6 +170,7 @@ class sensor_control(threading.Thread):
                 get_data['d5'] = 0
                 get_data['d4'] = 0
                 print("Error sensorTag disconnect! {0}".format(d))   
+                self.rescan()
         global_lock.release()  
     def get_write_key(self):
         '''
@@ -181,7 +216,7 @@ def main():
 
     # データーベースサーバーの立ち上げ
     redis_server = redis.Redis(host='localhost', port=6379, db=0)   # NoSQLのデータベースライブラリ
-    redis_server.flushdb()                                          # データーベース db 0の中身を消去
+    #redis_server.flushdb()                                          # データーベース db 0の中身を消去
 
     sensor_obj = sensor_control(arg.i,arg.t,redis_server)
     ambient_obj = ambient_control()
