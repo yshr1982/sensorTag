@@ -261,7 +261,6 @@ class sensor_control(threading.Thread):
         一つ以上見つけている時任意の時間(初期値5分)置きに不正終了したオブジェクトが無いかスキャンを実行
         不正終了オブジェクトを見つけた場合は、登録オブジェクトを全て削除する
         """
-        is_refresh = False
         while True:
             try:
                 if(len(self.sensor) == 0):
@@ -270,14 +269,12 @@ class sensor_control(threading.Thread):
                 else:
                     for dev in self.sensor:
                         if dev.refresh:
-                            is_refresh = True
+                            self.delete_sensorTag_obj()
                             break
-                    if is_refresh:
-                        self.delete_sensorTag_obj()
-                        self.scan()
                     time.sleep(self.scan_interval)
             except:
                 print("Error scan")
+                self.delete_sensorTag_obj()
                 continue
 
 
