@@ -120,7 +120,7 @@ class SensorTag_Access(threading.Thread):
             result = True
         except:
             print("ambient get_sensor error dev.addr {}".format(self.device.addr))
-            self.data = {"d1":0,"d2":0,"d3":0,"d4":0,"d5":0}
+            #self.data = {"d1":0,"d2":0,"d3":0,"d4":0,"d5":0}
             self.alive = False
         
         return result
@@ -153,8 +153,10 @@ class SensorTag_Access(threading.Thread):
 
     def send_ambient(self):
         print("send ambient dev.addr {0} data = {1}".format(self.device.addr,self.data))
-        self.ambient.send(self.data)
-
+        try:
+            self.ambient.send(self.data)
+        except:
+            print("Error send ambient.io")
     def run(self):
         """
         周期処理スレッド
