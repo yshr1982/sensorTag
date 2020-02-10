@@ -12,6 +12,7 @@ import threading
 import http.server
 import redis
 
+RESCAN_TIME = 1200
 
 class SensorTag_Access(threading.Thread):
     """
@@ -56,6 +57,8 @@ class SensorTag_Access(threading.Thread):
         """ディストラクター. スレッドを終了させる
         """
         self.kill()
+        self.tag.disconnect()
+        del self.tag
     
     ### スレッド制御用メソッド
     def begin(self):
@@ -153,10 +156,8 @@ class SensorTag_Access(threading.Thread):
 
     def send_ambient(self):
         print("send ambient dev.addr {0} data = {1}".format(self.device.addr,self.data))
-        try:
-            self.ambient.send(self.data)
-        except:
-            print("Error send ambient.io")
+        self.ambient.send(self.data)
+
     def run(self):
         """
         周期処理スレッド
@@ -233,7 +234,8 @@ class sensor_control(threading.Thread):
                 if sdid == 9 and val == 'CC2650 SensorTag':         # ローカルネームが'CC2650 SensorTag'のものを探す
                     find_sensor_list.append(d)
         self.append_sensor_list(find_sensor_list)
-
+    def refresh_sensor(self):
+        time.sleep(600)
 #    def rescan(self):
 #        """周期的にsensor Tagを見つけに行く処理を追加
 #        scanner.scanだと登録済みのsensor Tagのオブジェクトを削除してしまうので、別メソッドを用意
@@ -258,6 +260,7 @@ class sensor_control(threading.Thread):
             del dev
         self.sensor = []
     def run(self):
+        counter = 0
         """Sensorを見つける
         一つも見つけてない時は20秒おきにスキャンを実行
         一つ以上見つけている時任意の時間(初期値5分)置きに不正終了したオブジェクトが無いかスキャンを実行
@@ -267,13 +270,15 @@ class sensor_control(threading.Thread):
             try:
                 if(len(self.sensor) == 0):
                     self.scan()
+                    counter = 0
                     time.sleep(20)
                 else:
+                    time.sleep(self.scan_interval)
                     for dev in self.sensor:
-                        if dev.refresh:
+                        if (dev.refresh) or (counter > (RESCAN_TIME / self.scan_interval)):
                             self.delete_sensorTag_obj()
                             break
-                    time.sleep(self.scan_interval)
+                    counter += 1
             except:
                 print("Error scan")
                 self.delete_sensorTag_obj()
