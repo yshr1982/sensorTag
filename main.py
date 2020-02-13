@@ -83,11 +83,12 @@ class SensorTag_Access(threading.Thread):
         hash : addr : Sensor Tagの物理アドレス , rssi : 電波強度
         """    
 
-        self.mutex.acquire()
         info = {"rssi":self.device.rssi,"addr":self.device.addr}
-        self.mutex.release() 
         return info
     def get_sensor(self):
+
+        global global_rescan_flag
+        global global_lock
         """ センサーの値を取得する
         
         Returns:
@@ -125,10 +126,8 @@ class SensorTag_Access(threading.Thread):
             result = True
         except:
             print("ambient get_sensor error dev.addr {}".format(self.device.addr))
-            #self.data = {"d1":0,"d2":0,"d3":0,"d4":0,"d5":0}
             self.alive = False
             global_rescan_flag = True
-            self.tag.disconnect()
         
         global_lock.release()
         return result
@@ -170,16 +169,15 @@ class SensorTag_Access(threading.Thread):
         Ambientへデータを送信する
         """  
         while self.alive:
-            self.mutex.acquire()
             if self.ambient == 0:
                 self.setup_ambient()
             else:
                 if self.get_sensor() == False:
                     self.refresh = True
                     print("Error sensor access failed")
-                time.sleep(3)
-                self.send_ambient()
-            self.mutex.release()  
+                else:
+                    time.sleep(3)
+                    self.send_ambient()
             time.sleep(self.time)  
 
 
@@ -247,10 +245,11 @@ class sensor_control(threading.Thread):
         その際に既存Sensor Tagオブジェクトが全て置き換わってしまうので、登録済みセンサーを全て消去する.
         """
         for dev in self.sensor:
+            dev.tag.disconnect()
             del dev
         self.sensor = []
     def run(self):
-        counter = 0
+        global global_rescan_flag
         """Sensorを見つける
         一つも見つけてない時は20秒おきにスキャンを実行
         一つ以上見つけている時任意の時間(初期値5分)置きに不正終了したオブジェクトが無いかスキャンを実行
@@ -260,26 +259,23 @@ class sensor_control(threading.Thread):
             try:
                 if(len(self.sensor) == 0):
                     self.scan()
-                    counter = 0
-                    time.sleep(20)
+                    global_rescan_flag = False
                 else:
-                    time.sleep(self.scan_interval)
-                    for dev in self.sensor:
-                        if (global_rescan_flag) or (dev.refresh) or (counter > (RESCAN_TIME / self.scan_interval)):
-                            self.delete_sensorTag_obj()
-                            global_rescan_flag = False
-                            break
-                    counter += 1
+                    print("global_rescan_flag ")
+                    print(global_rescan_flag)
+                    if global_rescan_flag:
+                        self.delete_sensorTag_obj()
+                        global_rescan_flag = False
+                time.sleep(20)
             except:
                 print("Error scan")
                 self.delete_sensorTag_obj()
-                continue
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-i',action='store',type=float, default=120.0, help='measure interval')
-    parser.add_argument('-t',action='store',type=float, default=60.0, help='scan time out')
+    parser.add_argument('-t',action='store',type=float, default=30.0, help='scan time out')
     parser.add_argument('-r',action='store',type=float, default=10.0, help='scan interval')
     arg = parser.parse_args(sys.argv[1:])
     print("-i {} -t {} -r {}".format(arg.i,arg.t,arg.r))
