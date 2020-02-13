@@ -13,7 +13,8 @@ import http.server
 import redis
 
 RESCAN_TIME = 1200
-
+global_lock = threading.Lock() 
+global_rescan_flag = False
 class SensorTag_Access(threading.Thread):
     """
     Sensor Tagに周期的に通信を行い、測定値を取得する
@@ -93,6 +94,7 @@ class SensorTag_Access(threading.Thread):
             [Boolean] -- True : センサー値取得成功. False : センサー値取得失敗. 
         """
         result = False
+        global_lock.acquire()
         try:
             self.tag.IRtemperature.enable()
             self.tag.humidity.enable()
@@ -125,7 +127,10 @@ class SensorTag_Access(threading.Thread):
             print("ambient get_sensor error dev.addr {}".format(self.device.addr))
             #self.data = {"d1":0,"d2":0,"d3":0,"d4":0,"d5":0}
             self.alive = False
+            global_rescan_flag = True
+            self.tag.disconnect()
         
+        global_lock.release()
         return result
     def get_ambient_parameter(self):
         """Ambientへ送信するために必要なパラメータを取得する
@@ -172,6 +177,7 @@ class SensorTag_Access(threading.Thread):
                 if self.get_sensor() == False:
                     self.refresh = True
                     print("Error sensor access failed")
+                time.sleep(3)
                 self.send_ambient()
             self.mutex.release()  
             time.sleep(self.time)  
@@ -235,23 +241,7 @@ class sensor_control(threading.Thread):
                     find_sensor_list.append(d)
         self.append_sensor_list(find_sensor_list)
     def refresh_sensor(self):
-        time.sleep(600)
-#    def rescan(self):
-#        """周期的にsensor Tagを見つけに行く処理を追加
-#        scanner.scanだと登録済みのsensor Tagのオブジェクトを削除してしまうので、別メソッドを用意
-#        この方法ではだめ。登録済みScanEntryオブジェクトが書き換わってしまう。
-#        """
-#        find_sensor_list = []
-#        self.scanner.start()
-#        self.scanner.process(self.time_out)
-#        self.scanner.stop()
-#        devices = self.scanner.getDevices()
-#        print(devices)
-#        for d in devices:
-#            for (sdid, desc, val) in d.getScanData():
-#                if sdid == 9 and val == 'CC2650 SensorTag':         # ローカルネームが'CC2650 SensorTag'のものを探す
-#                    find_sensor_list.append(d)
-#        self.append_sensor_list(find_sensor_list)      
+        time.sleep(600)    
     def delete_sensorTag_obj(self):
         """sensor Tagとの通信エラーが発生した場合は再スキャンを行う
         その際に既存Sensor Tagオブジェクトが全て置き換わってしまうので、登録済みセンサーを全て消去する.
@@ -275,8 +265,9 @@ class sensor_control(threading.Thread):
                 else:
                     time.sleep(self.scan_interval)
                     for dev in self.sensor:
-                        if (dev.refresh) or (counter > (RESCAN_TIME / self.scan_interval)):
+                        if (global_rescan_flag) or (dev.refresh) or (counter > (RESCAN_TIME / self.scan_interval)):
                             self.delete_sensorTag_obj()
+                            global_rescan_flag = False
                             break
                     counter += 1
             except:
@@ -288,8 +279,8 @@ class sensor_control(threading.Thread):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-i',action='store',type=float, default=120.0, help='measure interval')
-    parser.add_argument('-t',action='store',type=float, default=10.0, help='scan time out')
-    parser.add_argument('-r',action='store',type=float, default=300.0, help='scan interval')
+    parser.add_argument('-t',action='store',type=float, default=60.0, help='scan time out')
+    parser.add_argument('-r',action='store',type=float, default=10.0, help='scan interval')
     arg = parser.parse_args(sys.argv[1:])
     print("-i {} -t {} -r {}".format(arg.i,arg.t,arg.r))
 
