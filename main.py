@@ -186,7 +186,7 @@ class sensor_control(threading.Thread):
         """
         find_sensor_list = []
 
-        while True
+        while True:
             try:
                 devices = self.scanner.scan(self.time_out)                  # BLEをスキャンする
             except:
@@ -240,7 +240,7 @@ class sensor_control(threading.Thread):
     def run(self):
         while True:
             self.scan()
-            time.sleep(30))
+            time.sleep(10)
 
 
 
