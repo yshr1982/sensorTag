@@ -14,20 +14,18 @@ import redis
 
 RESCAN_TIME = 1200
 
-class SensorTag_Access(threading.Thread):
+class Sensor_Access(threading.Thread):
     """
     Sensor Tagに周期的に通信を行い、測定値を取得する
     取得した結果をambientサイトに送信する
 
     Parameters
     ----------
-    self.device         : sensor Tag BLEオブジェクト
-    self.tag            : sensor Tag classオブジェクト
+    self.addr           : sensor mac address
     self.redis          : redisデータベース制御オブジェクト
     self.ambient        : ambient アクセス用オブジェクト
     self.time           : 周期処理の時間設定
-    self.data           : sensor Tag latest data
-    self.refresh        : sensor Tag refresh要求(Trueあり Falseなし)　Sensor Tagアクセスエラー時にフラグを立てる
+    self.data           : sensor latest data
     self.mutex          : 資源アクセス
     self.started        : スレッドイベントオブジェクト
     """
@@ -38,13 +36,11 @@ class SensorTag_Access(threading.Thread):
         ----------
         init_data : list
             "device"  BLEを操作するオブジェクト
-            "tag"     Sensor Tag操作オブジェクト
             "redis"   redisデータベース制御オブジェクト
         """
-        super(SensorTag_Access, self).__init__()
+        super(Sensor_Access, self).__init__()
         self.mutex   = threading.Lock() 
-        self.device  = init_data["device"]
-        self.tag     = init_data["tag"]
+        self.addr    = init_data["addr"]
         self.redis   = init_data["redis"]
         self.time    = init_data["time"]
         self.ambient = 0
@@ -57,8 +53,6 @@ class SensorTag_Access(threading.Thread):
         """ディストラクター. スレッドを終了させる
         """
         self.kill()
-        self.tag.disconnect()
-        del self.tag
     
     ### スレッド制御用メソッド
     def begin(self):
@@ -71,70 +65,14 @@ class SensorTag_Access(threading.Thread):
         self.alive = False
         self.join()
     ### スレッド制御用メソッド終わり.
-
-    def get_sensor_info(self):
-        """
-        Sensor Tagのアドレスを返す。
-        呼び元はこのメソッドを利用してSensor Tagが登録済みか否かを判断する.
-
-        Return
-        ----------
-        hash : addr : Sensor Tagの物理アドレス , rssi : 電波強度
-        """    
-
-        self.mutex.acquire()
-        info = {"rssi":self.device.rssi,"addr":self.device.addr}
-        self.mutex.release() 
-        return info
-    def get_sensor(self):
-        """ センサーの値を取得する
-        
-        Returns:
-            [Boolean] -- True : センサー値取得成功. False : センサー値取得失敗. 
-        """
-        result = False
-        try:
-            self.tag.IRtemperature.enable()
-            self.tag.humidity.enable()
-            self.tag.barometer.enable()
-            self.tag.battery.enable()
-            self.tag.lightmeter.enable()
-            time.sleep(2.0)
-            """
-            Parameter:
-                d1 : ambient temperature
-                d2 : humidity
-                d3 : barometer
-                d4 : light
-                d5 : battery level
-            """
-            self.data = {
-                'd1':self.tag.humidity.read()[0], 
-                'd2':self.tag.humidity.read()[1], 
-                'd3':self.tag.barometer.read()[1], 
-                'd5':self.tag.lightmeter.read(),
-                'd4':self.tag.battery.read()
-            }
-            self.tag.IRtemperature.disable()
-            self.tag.humidity.disable()
-            self.tag.barometer.disable()
-            self.tag.battery.disable()
-            self.tag.lightmeter.disable()
-            result = True
-        except:
-            print("ambient get_sensor error dev.addr {}".format(self.device.addr))
-            #self.data = {"d1":0,"d2":0,"d3":0,"d4":0,"d5":0}
-            self.alive = False
-        
-        return result
     def get_ambient_parameter(self):
         """Ambientへ送信するために必要なパラメータを取得する
-        REDISサーバーにアクセスし、sensortagのアドレスに紐づいているパラメータを取得
+        REDISサーバーにアクセスし、sensorのアドレスに紐づいているパラメータを取得
         データをパースしてsetup_ambientへ渡す.
         Returns:
             [dict] -- [channel ID , Write Key]
         """
-        key_data = self.redis.hgetall(self.device.addr)
+        key_data = self.redis.hgetall(self.addr)
         list_data = dict([(k.decode('utf-8'), v.decode('utf-8')) for k, v in key_data.items()])
         write_key = 0
         ch_id = 0
@@ -153,9 +91,20 @@ class SensorTag_Access(threading.Thread):
             self.ambient = ambient.Ambient(param["channelId"], param["write_key"])
         else:
             print("Ambient Parameter Not found")
+    def set_data(self,param):
+        """[センサー測定データを更新する]
+        ０値が入ったデータは未更新データとして無視する
+        Arguments:
+            param センサーデータ
+        """
+        self.mutex.acquire()
+        if param["temp"] > 0: self.data["d1"] = param["temp"]
+        if param["hum"] > 0: self.data["d2"] = param["hum"]
+        if param["batt"] > 0: self.data["d3"] = param["batt"]
+        self.mutex.release()  
 
     def send_ambient(self):
-        print("send ambient dev.addr {0} data = {1}".format(self.device.addr,self.data))
+        print("send ambient dev.addr {0} data = {1}".format(self.addr,self.data))
         self.ambient.send(self.data)
 
     def run(self):
@@ -169,9 +118,6 @@ class SensorTag_Access(threading.Thread):
             if self.ambient == 0:
                 self.setup_ambient()
             else:
-                if self.get_sensor() == False:
-                    self.refresh = True
-                    print("Error sensor access failed")
                 self.send_ambient()
             self.mutex.release()  
             time.sleep(self.time)  
@@ -185,104 +131,113 @@ class sensor_control(threading.Thread):
         self.time_out = time_out
         self.scanner = bluepy.btle.Scanner(0)   # bluepyのScannerインスタンスを生成
         self.redis = redis_obj
-        self.sensor = []
+        self.ambient_obj = []
         super(sensor_control, self).__init__()
         self.start()
-    def __del__(self):
-        self.kill()
-        for obj in self.sensor:
-            del obj
-    def append_sensor_list(self,find_sensor_list):
-        # Scan結果を元に登録処理を行う
-        for sensor in find_sensor_list:
-            is_new_device = True
-            idx = 0
-            
-            for i in range(0,len(self.sensor)):
-                found_sensor = self.sensor[i]
-                if ( sensor.addr == found_sensor.device.addr):
-                    if found_sensor.refresh :
-                        print("Dell object{}".format(sensor.addr))
-                        del found_sensor                                # 異常状態になったので制御オブジェクトを削除して作り直す.
-                        del self.sensor[i]                              # オブジェクトの登録を削除する
-                    else:
-                        print("Sensor {} is already registered.".format(sensor.addr))
-                        is_new_device = False
-                    break
-            if is_new_device :
-                self.redis.hset(sensor.addr, 'rssi', sensor.rssi)
-                init_data = {
-                    "device":sensor,
-                    "tag":bluepy.sensortag.SensorTag(sensor.addr),
-                    "redis":self.redis,
-                    "time":self.measure_interval
-                }
-                new_obj = SensorTag_Access(init_data)
-                print('Append new SensorTag device addr = %s' % sensor.addr)
-                self.sensor.append(new_obj)
+    def is_registered(self,addr):
+        """[登録済みセンサーか確認する]
+        """
+        ret = False
+        if len(self.ambient_obj) == 0:
+            return False
+        for d in self.ambient_obj:
+            if d.addr == addr:
+                ret = True
+        return ret
+    def register_ambient(self,addr):
+        """[ambientへsensor情報を登録する]
+        """
+        if self.is_registered(addr):
+            return False
+
+        self.redis.hset(addr, 'rssi', 0)
+        init_data = {
+            "addr":addr,
+            "redis":self.redis,
+            "time":self.measure_interval
+        }
+        self.ambient_obj.append(Sensor_Access(init_data))   
+        return True    
+        
+    def set_data(self,param):
+        """[Save read sensor data]
+        
+        Arguments:
+            param {[dict]} -- [sensor data array]
+            addr : mac address
+            temp : temperture
+            hum  : humidity
+            batt : battery
+        """
+        print(param)
+        if self.is_registered(param["addr"]):
+            for d in self.ambient_obj:
+                if d["addr"] == param["addr"]:
+                    d.set_data(param)
+        else:
+            self.register_ambient(param["addr"])
+            self.ambient_obj[-1].set_data(param)
+
 
     def scan(self):
-        """sensor Tagを見つける
-        見つけたデバイスに対応するSensorTag_Accessを作成し、オブジェクトを内部で保持する
+        """sensorを見つける
+        見つけたデバイスに対応するSensor_Accessを作成し、オブジェクトを内部で保持する
         見つけたデバイスがすでに登録済みの場合は、登録処理を行わない.ただし
         """
         find_sensor_list = []
-        print('scanning tag...')
         devices = self.scanner.scan(self.time_out)                  # BLEをスキャンする
+        temp= 0
+        hum = 0
+        batt = 0
         for d in devices:
-            for (sdid, desc, val) in d.getScanData():
-                if sdid == 9 and val == 'CC2650 SensorTag':         # ローカルネームが'CC2650 SensorTag'のものを探す
-                    find_sensor_list.append(d)
-        self.append_sensor_list(find_sensor_list)
+            hit = False
+            data = d.getScanData()
+            for (sdid, desc, val) in data:
+                if val == 'MJ_HT_V1':
+                    hit = True
+            if hit:
+                print("{}/{}".format(d.addr,data))
+                for (sdid, desc, val) in data:
+                    if sdid == 22:
+                        """[MJ_HT_V1 data format]
+                        |Byte 14 val| note       | data position|
+                        |===========|============|==============|
+                        |0x04       |Temperature | 17 + 18      |
+                        |0x06       |Humidity    | 17 + 18      |
+                        |0x0A       |Battery     | 17           |
+                        |0x0D       |Temperature | temp: 17 + 18|
+                        |           |and Humidity| hum: 19 + 20 |
+                        """
+                        if len(val) <= 14*2:
+                            print("data loss")
+                            continue
+                        subsequent = val[13*2:14*2]
+                        print(subsequent)
+                        if subsequent == '04':
+                            temp = int(val[17*2:18*2] + val[16*2:17*2],16)/10.0
+                        elif subsequent == '06':
+                            hum = int(val[17*2:18*2] + val[16*2:17*2],16)/10.0
+                        elif subsequent == '0A' or subsequent == '0a':
+                            batt = int(val[16*2:17*2],16)/10.0
+                        elif subsequent == '0D' or subsequent == '0d':
+                            temp = int(val[17*2:18*2] + val[16*2:17*2],16)/10.0
+                            hum = int(val[19*2:20*2] + val[18*2:19*2],16)/10.0
+                        else:
+                            print("data not match")
+                        self.set_data({"addr":d.addr,"temp":temp,"hum":hum,"batt":batt})
+
+                print("T = {} H = {} B = {}".format(temp,hum,batt))
     def refresh_sensor(self):
         time.sleep(600)
-#    def rescan(self):
-#        """周期的にsensor Tagを見つけに行く処理を追加
-#        scanner.scanだと登録済みのsensor Tagのオブジェクトを削除してしまうので、別メソッドを用意
-#        この方法ではだめ。登録済みScanEntryオブジェクトが書き換わってしまう。
-#        """
-#        find_sensor_list = []
-#        self.scanner.start()
-#        self.scanner.process(self.time_out)
-#        self.scanner.stop()
-#        devices = self.scanner.getDevices()
-#        print(devices)
-#        for d in devices:
-#            for (sdid, desc, val) in d.getScanData():
-#                if sdid == 9 and val == 'CC2650 SensorTag':         # ローカルネームが'CC2650 SensorTag'のものを探す
-#                    find_sensor_list.append(d)
-#        self.append_sensor_list(find_sensor_list)      
-    def delete_sensorTag_obj(self):
-        """sensor Tagとの通信エラーが発生した場合は再スキャンを行う
-        その際に既存Sensor Tagオブジェクトが全て置き換わってしまうので、登録済みセンサーを全て消去する.
-        """
-        for dev in self.sensor:
-            del dev
-        self.sensor = []
+     
     def run(self):
-        counter = 0
-        """Sensorを見つける
-        一つも見つけてない時は20秒おきにスキャンを実行
-        一つ以上見つけている時任意の時間(初期値5分)置きに不正終了したオブジェクトが無いかスキャンを実行
-        不正終了オブジェクトを見つけた場合は、登録オブジェクトを全て削除する
-        """
         while True:
             try:
-                if(len(self.sensor) == 0):
-                    self.scan()
-                    counter = 0
-                    time.sleep(20)
-                else:
-                    time.sleep(self.scan_interval)
-                    for dev in self.sensor:
-                        if (dev.refresh) or (counter > (RESCAN_TIME / self.scan_interval)):
-                            self.delete_sensorTag_obj()
-                            break
-                    counter += 1
+                self.scan()
             except:
-                print("Error scan")
-                self.delete_sensorTag_obj()
-                continue
+                print("Scan error")
+            time.sleep(60)
+
 
 
 def main():
