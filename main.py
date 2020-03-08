@@ -165,14 +165,14 @@ class sensor_control(threading.Thread):
         Arguments:
             param {[dict]} -- [sensor data array]
             addr : mac address
-            temp : temperture
+            temp : temperature
             hum  : humidity
             batt : battery
         """
-        print(param)
+        print(param)s
         if self.is_registered(param["addr"]):
             for d in self.ambient_obj:
-                if d["addr"] == param["addr"]:
+                if d.addr == param["addr"]:
                     d.set_data(param)
         else:
             self.register_ambient(param["addr"])
@@ -185,13 +185,22 @@ class sensor_control(threading.Thread):
         見つけたデバイスがすでに登録済みの場合は、登録処理を行わない.ただし
         """
         find_sensor_list = []
-        devices = self.scanner.scan(self.time_out)                  # BLEをスキャンする
+
+        while True
+            try:
+                devices = self.scanner.scan(self.time_out)                  # BLEをスキャンする
+            except:
+                print("Scan error. retry")
+                continue
+            break
+
         temp= 0
         hum = 0
         batt = 0
         for d in devices:
             hit = False
             data = d.getScanData()
+            hit = self.is_registered(d.addr)
             for (sdid, desc, val) in data:
                 if val == 'MJ_HT_V1':
                     hit = True
@@ -224,19 +233,14 @@ class sensor_control(threading.Thread):
                             hum = int(val[19*2:20*2] + val[18*2:19*2],16)/10.0
                         else:
                             print("data not match")
-                        self.set_data({"addr":d.addr,"temp":temp,"hum":hum,"batt":batt})
-
-                print("T = {} H = {} B = {}".format(temp,hum,batt))
+                self.set_data({"addr":d.addr,"temp":temp,"hum":hum,"batt":batt})
     def refresh_sensor(self):
         time.sleep(600)
      
     def run(self):
         while True:
-            try:
-                self.scan()
-            except:
-                print("Scan error")
-            time.sleep(60)
+            self.scan()
+            time.sleep(30))
 
 
 
