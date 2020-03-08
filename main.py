@@ -169,7 +169,7 @@ class sensor_control(threading.Thread):
             hum  : humidity
             batt : battery
         """
-        print(param)s
+        print(param)
         if self.is_registered(param["addr"]):
             for d in self.ambient_obj:
                 if d.addr == param["addr"]:
