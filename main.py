@@ -174,9 +174,6 @@ class sensor_control(threading.Thread):
             for d in self.ambient_obj:
                 if d.addr == param["addr"]:
                     d.set_data(param)
-        else:
-            self.register_ambient(param["addr"])
-            self.ambient_obj[-1].set_data(param)
 
 
     def scan(self):
@@ -198,13 +195,13 @@ class sensor_control(threading.Thread):
         hum = 0
         batt = 0
         for d in devices:
-            hit = False
             data = d.getScanData()
-            hit = self.is_registered(d.addr)
+            if "4c:65:a8:dc" in d.addr:
+                self.register_ambient(d.addr)
             for (sdid, desc, val) in data:
                 if val == 'MJ_HT_V1':
-                    hit = True
-            if hit:
+                    self.register_ambient(d.addr)
+            if self.is_registered(d.addr):
                 print("{}/{}".format(d.addr,data))
                 for (sdid, desc, val) in data:
                     if sdid == 22:
@@ -234,8 +231,6 @@ class sensor_control(threading.Thread):
                         else:
                             print("data not match")
                 self.set_data({"addr":d.addr,"temp":temp,"hum":hum,"batt":batt})
-    def refresh_sensor(self):
-        time.sleep(600)
      
     def run(self):
         while True:
