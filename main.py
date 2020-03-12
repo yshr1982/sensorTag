@@ -131,6 +131,7 @@ class sensor_control(threading.Thread):
         self.time_out = time_out
         self.scanner = bluepy.btle.Scanner(0)   # bluepyのScannerインスタンスを生成
         self.redis = redis_obj
+        self.read_data = []
         self.ambient_obj = []
         super(sensor_control, self).__init__()
         self.start()
@@ -156,10 +157,15 @@ class sensor_control(threading.Thread):
             "redis":self.redis,
             "time":self.measure_interval
         }
-        self.ambient_obj.append(Sensor_Access(init_data))   
+        self.ambient_obj.append(Sensor_Access(init_data)) 
+        d = {addr:{"temp":0,"hum":0,"batt":0}}
+        if len(self.read_data) == 0:
+            self.read_data = d
+        else:
+            self.read_data.update(d)
         return True    
         
-    def set_data(self,param):
+    def set_data(self,addr,param):
         """[Save read sensor data]
         
         Arguments:
@@ -170,9 +176,10 @@ class sensor_control(threading.Thread):
             batt : battery
         """
         print(param)
-        if self.is_registered(param["addr"]):
+        if self.is_registered(addr):
             for d in self.ambient_obj:
-                if d.addr == param["addr"]:
+                if d.addr == addr:
+                    print("ambient obj {} : {}".format(d,param))
                     d.set_data(param)
 
 
@@ -191,16 +198,10 @@ class sensor_control(threading.Thread):
                 continue
             break
 
-        temp= 0
-        hum = 0
-        batt = 0
         for d in devices:
             data = d.getScanData()
             if "4c:65:a8:dc" in d.addr:
                 self.register_ambient(d.addr)
-            for (sdid, desc, val) in data:
-                if val == 'MJ_HT_V1':
-                    self.register_ambient(d.addr)
             if self.is_registered(d.addr):
                 print("{}/{}".format(d.addr,data))
                 for (sdid, desc, val) in data:
@@ -220,17 +221,18 @@ class sensor_control(threading.Thread):
                         subsequent = val[13*2:14*2]
                         print(subsequent)
                         if subsequent == '04':
-                            temp = int(val[17*2:18*2] + val[16*2:17*2],16)/10.0
+                            self.read_data[d.addr].update(temp=int(val[17*2:18*2] + val[16*2:17*2],16)/10.0)
                         elif subsequent == '06':
-                            hum = int(val[17*2:18*2] + val[16*2:17*2],16)/10.0
+                            self.read_data[d.addr].update(hum=int(val[17*2:18*2] + val[16*2:17*2],16)/10.0)
                         elif subsequent == '0A' or subsequent == '0a':
-                            batt = int(val[16*2:17*2],16)/10.0
+                            self.read_data[d.addr].update(batt=int(val[16*2:17*2],16)/10.0)
                         elif subsequent == '0D' or subsequent == '0d':
-                            temp = int(val[17*2:18*2] + val[16*2:17*2],16)/10.0
-                            hum = int(val[19*2:20*2] + val[18*2:19*2],16)/10.0
+                            self.read_data[d.addr].update(temp=int(val[17*2:18*2] + val[16*2:17*2],16)/10.0)
+                            self.read_data[d.addr].update(hum=int(val[19*2:20*2] + val[18*2:19*2],16)/10.0)
                         else:
                             print("data not match")
-                self.set_data({"addr":d.addr,"temp":temp,"hum":hum,"batt":batt})
+                        print(self.read_data)
+                self.set_data(d.addr,self.read_data[d.addr])
      
     def run(self):
         while True:
