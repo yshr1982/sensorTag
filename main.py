@@ -4,6 +4,7 @@
 #     温度、湿度、気圧、照度、バッテリーレベルを取得し、Ambientに送信
 #
 import bluepy
+from bluepy.btle import Scanner, DefaultDelegate
 import time
 import sys
 import argparse
@@ -11,6 +12,7 @@ import ambient
 import threading
 import http.server
 import redis
+import subprocess
 
 RESCAN_TIME = 1200
 
@@ -123,18 +125,13 @@ class Sensor_Access(threading.Thread):
             time.sleep(self.time)  
 
 
-class sensor_control(threading.Thread):
-
-    def __init__(self,measure_interval = 120,scan_interval = 300.0,time_out = 5.0,redis_obj = None):
+class sensor_control(DefaultDelegate):
+    def __init__(self,measure_interval = 120,redis_obj = None):
         self.measure_interval = measure_interval
-        self.scan_interval = scan_interval
-        self.time_out = time_out
-        self.scanner = bluepy.btle.Scanner(0)   # bluepyのScannerインスタンスを生成
         self.redis = redis_obj
         self.read_data = []
         self.ambient_obj = []
-        super(sensor_control, self).__init__()
-        self.start()
+        
     def is_registered(self,addr):
         """[登録済みセンサーか確認する]
         """
@@ -183,62 +180,45 @@ class sensor_control(threading.Thread):
                     d.set_data(param)
 
 
-    def scan(self):
+    def handleDiscovery(self, devices, isNewDev, isNewData):
         """sensorを見つける
         見つけたデバイスに対応するSensor_Accessを作成し、オブジェクトを内部で保持する
         見つけたデバイスがすでに登録済みの場合は、登録処理を行わない.ただし
         """
-        find_sensor_list = []
-
-        while True:
-            try:
-                devices = self.scanner.scan(self.time_out)                  # BLEをスキャンする
-            except:
-                print("Scan error. retry")
-                continue
-            break
-
-        for d in devices:
-            data = d.getScanData()
-            if "4c:65:a8:dc" in d.addr:
-                self.register_ambient(d.addr)
-            if self.is_registered(d.addr):
-                print("{}/{}".format(d.addr,data))
-                for (sdid, desc, val) in data:
-                    if sdid == 22:
-                        """[MJ_HT_V1 data format]
-                        |Byte 14 val| note       | data position|
-                        |===========|============|==============|
-                        |0x04       |Temperature | 17 + 18      |
-                        |0x06       |Humidity    | 17 + 18      |
-                        |0x0A       |Battery     | 17           |
-                        |0x0D       |Temperature | temp: 17 + 18|
-                        |           |and Humidity| hum: 19 + 20 |
-                        """
-                        if len(val) <= 14*2:
-                            print("data loss")
-                            continue
-                        subsequent = val[13*2:14*2]
-                        print(subsequent)
-                        if subsequent == '04':
-                            self.read_data[d.addr].update(temp=int(val[17*2:18*2] + val[16*2:17*2],16)/10.0)
-                        elif subsequent == '06':
-                            self.read_data[d.addr].update(hum=int(val[17*2:18*2] + val[16*2:17*2],16)/10.0)
-                        elif subsequent == '0A' or subsequent == '0a':
-                            self.read_data[d.addr].update(batt=int(val[16*2:17*2],16)/10.0)
-                        elif subsequent == '0D' or subsequent == '0d':
-                            self.read_data[d.addr].update(temp=int(val[17*2:18*2] + val[16*2:17*2],16)/10.0)
-                            self.read_data[d.addr].update(hum=int(val[19*2:20*2] + val[18*2:19*2],16)/10.0)
-                        else:
-                            print("data not match")
-                        print(self.read_data)
-                self.set_data(d.addr,self.read_data[d.addr])
-     
-    def run(self):
-        while True:
-            self.scan()
-            time.sleep(10)
-
+        data = devices.getScanData()
+        if "4c:65:a8:dc" in devicesaddr:
+            self.register_ambient(devicesaddr)
+        if self.is_registered(devicesaddr):
+            print("{}/{}".format(devicesaddr,data))
+            for (sdid, desc, val) in data:
+                if sdid == 22:
+                    """[MJ_HT_V1 data format]
+                    |Byte 14 val| note       | data position|
+                    |===========|============|==============|
+                    |0x04       |Temperature | 17 + 18      |
+                    |0x06       |Humidity    | 17 + 18      |
+                    |0x0A       |Battery     | 17           |
+                    |0x0D       |Temperature | temp: 17 + 18|
+                    |           |and Humidity| hum: 19 + 20 |
+                    """
+                    if len(val) <= 14*2:
+                        print("data loss")
+                        continue
+                    subsequent = val[13*2:14*2]
+                    print(subsequent)
+                    if subsequent == '04':
+                        self.read_data[devicesaddr].update(temp=int(val[17*2:18*2] + val[16*2:17*2],16)/10.0)
+                    elif subsequent == '06':
+                        self.read_data[devicesaddr].update(hum=int(val[17*2:18*2] + val[16*2:17*2],16)/10.0)
+                    elif subsequent == '0A' or subsequent == '0a':
+                        self.read_data[devicesaddr].update(batt=int(val[16*2:17*2],16)/10.0)
+                    elif subsequent == '0D' or subsequent == '0d':
+                        self.read_data[devicesaddr].update(temp=int(val[17*2:18*2] + val[16*2:17*2],16)/10.0)
+                        self.read_data[devicesaddr].update(hum=int(val[19*2:20*2] + val[18*2:19*2],16)/10.0)
+                    else:
+                        print("data not match")
+                    print(self.read_data)
+            self.set_data(devicesaddr,self.read_data[devicesaddr])
 
 
 def main():
@@ -253,14 +233,27 @@ def main():
     redis_server = redis.Redis(host='localhost', port=6379, db=0)   # NoSQLのデータベースライブラリ
     #redis_server.flushdb()                                          # データーベース db 0の中身を消去
 
-    sensor_obj = sensor_control(arg.i,arg.r,arg.t,redis_server)
+    delegate = sensor_control(arg.i,redis_server)
+    scanner = Scanner().withDelegate(delegate)
     server_address = ("", 80)
     handler_class = http.server.CGIHTTPRequestHandler #1 ハンドラを設定
     server = http.server.HTTPServer(server_address, handler_class)
-    server.serve_forever()
-    sensor_obj.join()
-
-if __name__ == "__main__":
-    main()
     while True:
-        time.sleep(60.0)
+        try:
+            for i in range(3):
+                scanner.scan(arg.t)
+        except Exception as e:
+            print('error!', e)
+            subprocess.call(['hciconfig', 'hci0', 'down'])
+            time.sleep(2)
+            subprocess.call(['hciconfig', 'hci0', 'up'])
+            time.sleep(2)
+    
+    server.serve_forever()
+    
+if __name__ == "__main__":
+
+    main()
+
+
+
