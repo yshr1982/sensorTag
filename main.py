@@ -11,10 +11,18 @@ import ambient
 import threading
 import http.server
 import redis
+from bluepy.btle import Scanner, DefaultDelegate
 
 RESCAN_TIME = 1200
 global_lock = threading.Lock() 
-global_rescan_flag = False
+
+
+def reset_bluetooth_driver():
+    subprocess.call(['hciconfig', 'hci0', 'down'])
+    time.sleep(2)
+    subprocess.call(['hciconfig', 'hci0', 'up'])
+    time.sleep(2)
+
 class SensorTag_Access(threading.Thread):
     """
     Sensor Tagに周期的に通信を行い、測定値を取得する
@@ -28,7 +36,6 @@ class SensorTag_Access(threading.Thread):
     self.ambient        : ambient アクセス用オブジェクト
     self.time           : 周期処理の時間設定
     self.data           : sensor Tag latest data
-    self.refresh        : sensor Tag refresh要求(Trueあり Falseなし)　Sensor Tagアクセスエラー時にフラグを立てる
     self.mutex          : 資源アクセス
     self.started        : スレッドイベントオブジェクト
     """
@@ -49,10 +56,10 @@ class SensorTag_Access(threading.Thread):
         self.redis   = init_data["redis"]
         self.time    = init_data["time"]
         self.ambient = 0
-        self.refresh = False
         self.started = threading.Event()
         self.data    = {"d1":0,"d2":0,"d3":0,"d4":0,"d5":0}
         self.alive   = True
+        self.response = False
         self.start()
     def __del__(self):
         """ディストラクター. スレッドを終了させる
@@ -87,7 +94,6 @@ class SensorTag_Access(threading.Thread):
         return info
     def get_sensor(self):
 
-        global global_rescan_flag
         global global_lock
         """ センサーの値を取得する
         
@@ -126,8 +132,6 @@ class SensorTag_Access(threading.Thread):
             result = True
         except:
             print("ambient get_sensor error dev.addr {}".format(self.device.addr))
-            self.alive = False
-            global_rescan_flag = True
         
         global_lock.release()
         return result
@@ -169,113 +173,122 @@ class SensorTag_Access(threading.Thread):
         Ambientへデータを送信する
         """  
         while self.alive:
+            self.response = False
             if self.ambient == 0:
                 self.setup_ambient()
             else:
                 if self.get_sensor() == False:
-                    self.refresh = True
-                    print("Error sensor access failed")
+                    self.response = True
+                    print("error sensor access.")
+                    while True: time.sleep(1000)
                 else:
-                    time.sleep(3)
                     self.send_ambient()
             time.sleep(self.time)  
 
-
-class sensor_control(threading.Thread):
-
-    def __init__(self,measure_interval = 120,scan_interval = 300.0,time_out = 5.0,redis_obj = None):
-        self.measure_interval = measure_interval
-        self.scan_interval = scan_interval
-        self.time_out = time_out
-        self.scanner = bluepy.btle.Scanner(0)   # bluepyのScannerインスタンスを生成
-        self.redis = redis_obj
-        self.sensor = []
-        super(sensor_control, self).__init__()
-        self.start()
+class sensor_scan(DefaultDelegate):
+    def __init__(self,measure_interval = 120,redis_obj = None):
+        self.measure_interval = measure_interval    # sensor tag通信間隔
+        self.redis = redis_obj                      # redis serverオブジェクを渡す
+        self.sensor = []                            # sensor tag通信オブジェクト格納配列
+        self.reset = False
+        self.found_device_list = []                 # scanで見つけたセンサーリスト.未登録
+        self.ambient_alive_counter = 0
     def __del__(self):
+        self.del_sensor_access_obj()
         self.kill()
-        for obj in self.sensor:
-            del obj
-    def append_sensor_list(self,find_sensor_list):
-        # Scan結果を元に登録処理を行う
-        for sensor in find_sensor_list:
-            is_new_device = True
-            idx = 0
-            
-            for i in range(0,len(self.sensor)):
-                found_sensor = self.sensor[i]
-                if ( sensor.addr == found_sensor.device.addr):
-                    if found_sensor.refresh :
-                        print("Dell object{}".format(sensor.addr))
-                        del found_sensor                                # 異常状態になったので制御オブジェクトを削除して作り直す.
-                        del self.sensor[i]                              # オブジェクトの登録を削除する
-                    else:
-                        print("Sensor {} is already registered.".format(sensor.addr))
-                        is_new_device = False
-                    break
-            if is_new_device :
-                self.redis.hset(sensor.addr, 'rssi', sensor.rssi)
-                init_data = {
-                    "device":sensor,
-                    "tag":bluepy.sensortag.SensorTag(sensor.addr),
-                    "redis":self.redis,
-                    "time":self.measure_interval
-                }
-                new_obj = SensorTag_Access(init_data)
-                print('Append new SensorTag device addr = %s' % sensor.addr)
-                self.sensor.append(new_obj)
-
-    def scan(self):
-        """sensor Tagを見つける
-        見つけたデバイスに対応するSensorTag_Accessを作成し、オブジェクトを内部で保持する
-        見つけたデバイスがすでに登録済みの場合は、登録処理を行わない.ただし
-        """
-        find_sensor_list = []
-        print('scanning tag...')
-        devices = self.scanner.scan(self.time_out)                  # BLEをスキャンする
-        for d in devices:
-            for (sdid, desc, val) in d.getScanData():
-                if sdid == 9 and val == 'CC2650 SensorTag':         # ローカルネームが'CC2650 SensorTag'のものを探す
-                    find_sensor_list.append(d)
-        self.append_sensor_list(find_sensor_list)
-    def refresh_sensor(self):
-        time.sleep(600)    
-    def delete_sensorTag_obj(self):
+    def del_sensor_access_obj(self):
         """sensor Tagとの通信エラーが発生した場合は再スキャンを行う
         その際に既存Sensor Tagオブジェクトが全て置き換わってしまうので、登録済みセンサーを全て消去する.
         """
         for dev in self.sensor:
+            print("disconnect sensor tag")
             dev.tag.disconnect()
             del dev
         self.sensor = []
-    def run(self):
-        global global_rescan_flag
-        """Sensorを見つける
-        一つも見つけてない時は20秒おきにスキャンを実行
-        一つ以上見つけている時任意の時間(初期値5分)置きに不正終了したオブジェクトが無いかスキャンを実行
-        不正終了オブジェクトを見つけた場合は、登録オブジェクトを全て削除する
+    def check_ambient_alive(self):
+        """sensor tagにアクセス中に応答不能になる場合があるので、周期的に生存チェクを行う
+        エラーの場合はbluetooth driverを再起動する.
         """
+        is_reset = False
+        for obj in self.sensor:
+            if obj.response :
+                is_reset = True
+        if is_reset:
+            self.ambient_alive_counter += 1
+        else:
+            for obj in self.sensor:
+                obj.response = False
+            self.ambient_alive_counter = 0
+ 
+        if self.ambient_alive_counter > 10:
+            self.del_sensor_access_obj()
+            reset_bluetooth_driver()
+
+    def register_sensor(self,sensor):
+        # Scan結果を元に登録処理を行う  
+        print("{} {} ".format(sensor,sensor.addr))
+        self.redis.hset(sensor.addr, 'rssi', sensor.rssi)
+        init_data = {
+            "device":sensor,
+            "tag":bluepy.sensortag.SensorTag(sensor.addr),
+            "redis":self.redis,
+            "time":self.measure_interval
+        }
+        new_obj = SensorTag_Access(init_data)
+        print('Append new SensorTag device addr = %s' % sensor.addr)
+        self.sensor.append(new_obj)
+    def handleDiscovery(self, d, isNewDev, isNewData):
+        """sensorを見つける
+        見つけたデバイスに対応するSensor_Accessを作成し、オブジェクトを内部で保持する
+        見つけたデバイスがすでに登録済みの場合は、登録処理を行わない.ただし
+        """
+        if isNewDev == False:
+            print("Device already found {}".format(d.addr))
+            return
+        for (sdid, desc, val) in d.getScanData():
+            if sdid == 9 and val == 'CC2650 SensorTag':         # ローカルネームが'CC2650 SensorTag'のものを探す
+                self.found_device_list.append(d)
+
+class sensor_control(threading.Thread):
+
+    def __init__(self,measure_interval = 120.0,time_out = 30.0,redis_obj = None):
+        self.time_out = time_out
+        self.delegate = sensor_scan(measure_interval,redis_obj)
+        self.scanner = Scanner().withDelegate(self.delegate )
+        super(sensor_control, self).__init__()
+        self.start()
+    def scan(self):
+        """センサー探索。エラーになりやすいのでエラー時には見つけたセンサーを削除する
+        """
+        try:
+            self.scanner.scan(self.time_out)
+        except Exception as e:
+            print('error!', e)
+            self.delegate.found_device_list = []
+    def register_sensor(self):
+        try:
+            for d in self.delegate.found_device_list:
+                self.delegate.register_sensor(d)
+        except Exception as e:
+            print('error!', e)
+            self.delegate.found_device_list = []
+            for dev in self.delegate.sensor:
+                del dev
+    def run(self):
         while True:
-            try:
-                if(len(self.sensor) == 0):
-                    self.scan()
-                    global_rescan_flag = False
-                else:
-                    print("global_rescan_flag ")
-                    print(global_rescan_flag)
-                    if global_rescan_flag:
-                        self.delete_sensorTag_obj()
-                        global_rescan_flag = False
-                time.sleep(20)
-            except:
-                print("Error scan")
-                self.delete_sensorTag_obj()
+            if( len(self.delegate.sensor) == 0) :
+                self.scan()
+                self.register_sensor()
+            elif (self.delegate.reset):
+                self.delegate.del_sensor_access_obj()
+            else:
+                self.delegate.check_ambient_alive()
 
-
+            
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-i',action='store',type=float, default=120.0, help='measure interval')
-    parser.add_argument('-t',action='store',type=float, default=30.0, help='scan time out')
+    parser.add_argument('-t',action='store',type=float, default=60.0, help='scan time out')
     parser.add_argument('-r',action='store',type=float, default=10.0, help='scan interval')
     arg = parser.parse_args(sys.argv[1:])
     print("-i {} -t {} -r {}".format(arg.i,arg.t,arg.r))
@@ -284,7 +297,7 @@ def main():
     redis_server = redis.Redis(host='localhost', port=6379, db=0)   # NoSQLのデータベースライブラリ
     #redis_server.flushdb()                                          # データーベース db 0の中身を消去
 
-    sensor_obj = sensor_control(arg.i,arg.r,arg.t,redis_server)
+    sensor_obj = sensor_control(arg.i,arg.t,redis_server)
     server_address = ("", 80)
     handler_class = http.server.CGIHTTPRequestHandler #1 ハンドラを設定
     server = http.server.HTTPServer(server_address, handler_class)
@@ -295,3 +308,4 @@ if __name__ == "__main__":
     main()
     while True:
         time.sleep(60.0)
+
