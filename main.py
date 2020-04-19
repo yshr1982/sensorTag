@@ -188,7 +188,7 @@ class sensor_scan(DefaultDelegate):
         見つけたデバイスがすでに登録済みの場合は、登録処理を行わない.ただし
         """
         data = d.getScanData()
-        if "4c:65:a8:dc" in d.addr:
+        if "4c:65:a8:" in d.addr:
             self.register_ambient(d.addr)
         if self.is_registered(d.addr):
             print("{}/{}".format(d.addr,data))
